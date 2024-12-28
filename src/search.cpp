@@ -268,7 +268,7 @@ void Search::Worker::iterative_deepening() {
     // When playing with strength handicap enable MultiPV search that we will
     // use behind-the-scenes to retrieve a set of possible moves.
     if (skill.enabled())
-        multiPV = std::max(multiPV, size_t(4));
+        multiPV = std::max(multiPV, size_t(15));
 
     multiPV = std::min(multiPV, rootMoves.size());
 
@@ -429,7 +429,7 @@ void Search::Worker::iterative_deepening() {
 
         // If the skill level is enabled and time is up, pick a sub-optimal best move
         if (skill.enabled() && skill.time_to_pick(rootDepth))
-            skill.pick_best(rootMoves, multiPV);
+            skill.pick_best(this, rootMoves, multiPV);
 
         // Use part of the gained time from a previous stable move for the current move
         for (auto&& th : threads)
@@ -493,7 +493,7 @@ void Search::Worker::iterative_deepening() {
     if (skill.enabled())
         std::swap(rootMoves[0],
                   *std::find(rootMoves.begin(), rootMoves.end(),
-                             skill.best ? skill.best : skill.pick_best(rootMoves, multiPV)));
+                             skill.best ? skill.best : skill.pick_best(this, rootMoves, multiPV)));
 }
 
 // Reset histories, usually before a new game
@@ -1727,9 +1727,9 @@ TimePoint Search::Worker::elapsed() const {
 
 TimePoint Search::Worker::elapsed_time() const { return main_manager()->tm.elapsed_time(); }
 
-Value Search::Worker::evaluate(const Position& pos) {
+Value Search::Worker::evaluate(const Position& pos, bool force_small_net) {
     return Eval::evaluate(networks[numaAccessToken], pos, refreshTable,
-                          optimism[pos.side_to_move()]);
+                          optimism[pos.side_to_move()], force_small_net);
 }
 
 namespace {
@@ -1874,31 +1874,88 @@ void update_quiet_histories(
 
 // When playing with strength handicap, choose the best move among a set of
 // RootMoves using a statistical rule dependent on 'level'. Idea by Heinz van Saanen.
-Move Skill::pick_best(const RootMoves& rootMoves, size_t multiPV) {
-    static PRNG rng(now());  // PRNG sequence should be non-deterministic
+Move Skill::pick_best(Worker* worker, const RootMoves& rootMoves, size_t multiPV) {
+  
+	constexpr const char* WEIRD_PREFIX = "info string WEIRD: ";
 
     // RootMoves are already sorted by score in descending order
     Value  topScore = rootMoves[0].score;
-    int    delta    = std::min(topScore - rootMoves[multiPV - 1].score, int(PawnValue));
     int    maxScore = -VALUE_INFINITE;
-    double weakness = 120 - 2 * level;
+	int bestIndex = -1;
+	int bestEvalShift = -VALUE_INFINITE;
+
+	auto fnEvaluatePos = [&]() -> Value {
+		auto& pos = worker->rootPos;
+		Value eval = worker->evaluate(pos, true);
+
+		if (pos.rule50_count() > 25) {
+			// Decide to lock in so we dont stalemate
+			eval = 0;
+		}
+
+		return eval;
+	};
 
     // Choose best move. For each move score we add two terms, both dependent on
     // weakness. One is deterministic and bigger for weaker levels, and one is
     // random. Then we choose the move with the resulting highest score.
     for (size_t i = 0; i < multiPV; ++i)
     {
-        // This is our magic formula
-        int push = (weakness * int(topScore - rootMoves[i].score)
-                    + delta * (rng.rand<unsigned>() % int(weakness)))
-                 / 128;
+        // Calculate move eval shift from weirdness
+		Stockfish::Value evalShift;
+		{
+			auto& rootMove = rootMoves[i];
+			auto move = rootMove.pv[0];
+			Stockfish::StateInfo newState;
+			worker->rootPos.do_move(move, newState);
 
-        if (rootMoves[i].score + push >= maxScore)
+
+			Stockfish::Value oppBaseEval;
+			
+			if (!worker->rootPos.checkers()) {
+				oppBaseEval = fnEvaluatePos();
+			} else {
+				if (rootMove.pv.size() > 1) {
+					auto nextMove = rootMove.pv[1];
+					Stockfish::StateInfo newState2;
+					worker->rootPos.do_move(nextMove, newState2);
+
+					if (!worker->rootPos.checkers()) {
+						// Damn, still checks. Just give up :(
+						oppBaseEval = 0;
+					} else {
+						oppBaseEval = fnEvaluatePos();
+					}
+
+					worker->rootPos.undo_move(nextMove);
+				} else {
+					// No extra moves, just give up
+					oppBaseEval = 0;
+				}
+			}
+
+			constexpr float EVAL_SHIFT_SCALE = 0.7f;
+			constexpr int MAX_OPP_EVAL = 1000;
+			evalShift = int(std::min(MAX_OPP_EVAL, std::max(oppBaseEval, -MAX_OPP_EVAL)) * EVAL_SHIFT_SCALE);
+			//sync_cout << "WEIRD: [" << i << "] " << rootMove.score << " + " << "(" << oppBaseEval << " -> " << evalShift << ")" << sync_endl;
+			
+			worker->rootPos.undo_move(move);
+		}
+
+        if (rootMoves[i].score + evalShift >= maxScore)
         {
-            maxScore = rootMoves[i].score + push;
+            maxScore = rootMoves[i].score + evalShift;
             best     = rootMoves[i].pv[0];
+			bestIndex = i;
+			bestEvalShift = evalShift;
         }
     }
+
+	if (best != rootMoves[0].pv[0]) {
+		sync_cout << WEIRD_PREFIX << "Switched best move (0 -> " << bestIndex << ", eval shift: " << bestEvalShift << ")" << sync_endl;
+	} else {
+		sync_cout << WEIRD_PREFIX << "Didn't switch best move " << sync_endl;
+	}
 
     return best;
 }

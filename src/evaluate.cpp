@@ -55,11 +55,11 @@ bool Eval::use_smallnet(const Position& pos) {
 Value Eval::evaluate(const Eval::NNUE::Networks&    networks,
                      const Position&                pos,
                      Eval::NNUE::AccumulatorCaches& caches,
-                     int                            optimism) {
+                     int                            optimism, bool force_small_net) {
 
     assert(!pos.checkers());
 
-    bool smallNet           = use_smallnet(pos);
+    bool smallNet           = use_smallnet(pos) || force_small_net;
     auto [psqt, positional] = smallNet ? networks.small.evaluate(pos, &caches.small)
                                        : networks.big.evaluate(pos, &caches.big);
 

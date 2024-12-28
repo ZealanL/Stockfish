@@ -201,9 +201,9 @@ struct Skill {
         else
             level = double(skill_level);
     }
-    bool enabled() const { return level < 20.0; }
-    bool time_to_pick(Depth depth) const { return depth == 1 + int(level); }
-    Move pick_best(const RootMoves&, size_t multiPV);
+    bool enabled() const { return true; }
+    bool time_to_pick(Depth depth) const { return true; }
+    Move pick_best(struct Worker* worker, const RootMoves&, size_t multiPV);
 
     double level;
     Move   best = Move::none();
@@ -291,7 +291,6 @@ class Worker {
     CorrectionHistory<NonPawn>      nonPawnCorrectionHistory[COLOR_NB];
     CorrectionHistory<Continuation> continuationCorrectionHistory;
 
-   private:
     void iterative_deepening();
 
     // This is the main search function, for both PV and non-PV nodes
@@ -313,7 +312,7 @@ class Worker {
     TimePoint elapsed() const;
     TimePoint elapsed_time() const;
 
-    Value evaluate(const Position&);
+    Value evaluate(const Position& pos, bool force_small_net = false);
 
     LimitsType limits;
 

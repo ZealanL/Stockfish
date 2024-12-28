@@ -1,6 +1,10 @@
 # Files from build
 **/*.o
 **/*.s
+*.exe
+*.dll
+*.obj
+*.lib
 src/.depend
 
 # Built binary
@@ -15,3 +19,19 @@ tsan.supp
 __pycache__/
 tests/syzygy
 tests/bench_tmp.epd
+
+# Anything starting with 3 underscores
+___
+
+# PyCharm's .idea folder
+.idea/
+
+# CSV files
+*.csv
+
+# Visual Studio stuff
+.vs/
+*.vcxproj*
+
+# Build
+x64/
